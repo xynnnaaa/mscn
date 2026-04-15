@@ -6,7 +6,7 @@ import torch.nn.functional as F
 # Define model architecture
 
 class SetConv(nn.Module):
-    def __init__(self, sample_feats, predicate_feats, join_feats, hid_units):
+    def __init__(self, sample_feats, predicate_feats, join_feats, join_sample_feats, hid_units, dropout_p=0.3):
         super(SetConv, self).__init__()
         self.sample_mlp1 = nn.Linear(sample_feats, hid_units)
         self.sample_mlp2 = nn.Linear(hid_units, hid_units)
@@ -14,10 +14,27 @@ class SetConv(nn.Module):
         self.predicate_mlp2 = nn.Linear(hid_units, hid_units)
         self.join_mlp1 = nn.Linear(join_feats, hid_units)
         self.join_mlp2 = nn.Linear(hid_units, hid_units)
-        self.out_mlp1 = nn.Linear(hid_units * 3, hid_units)
+
+        self.use_join_sample = join_sample_feats > 0
+
+        # self.join_sample_dropout = nn.Dropout(p=dropout_p)
+
+        if self.use_join_sample:
+            print("Using join sample embedding model.")
+            self.join_sample_mlp1 = nn.Linear(join_sample_feats, hid_units)
+            self.join_sample_mlp2 = nn.Linear(hid_units, hid_units)
+            # 输入维度为 4 个头的拼接
+            self.out_mlp1 = nn.Linear(hid_units * 4, hid_units)
+        else:
+            # 输入维度回退为 3 个头的拼接
+            print("Using default model without join sample embedding.")
+            self.out_mlp1 = nn.Linear(hid_units * 3, hid_units)
         self.out_mlp2 = nn.Linear(hid_units, 1)
 
-    def forward(self, samples, predicates, joins, sample_mask, predicate_mask, join_mask):
+        # self.out_mlp1 = nn.Linear(hid_units * 3, hid_units)
+        # self.out_mlp2 = nn.Linear(hid_units, 1)
+
+    def forward(self, samples, predicates, joins, join_samples, sample_mask, predicate_mask, join_mask):
         # samples has shape [batch_size x num_joins+1 x sample_feats]
         # predicates has shape [batch_size x num_predicates x predicate_feats]
         # joins has shape [batch_size x num_joins x join_feats]
@@ -43,7 +60,18 @@ class SetConv(nn.Module):
         join_norm = join_mask.sum(1, keepdim=False)
         hid_join = hid_join / join_norm
 
-        hid = torch.cat((hid_sample, hid_predicate, hid_join), 1)
+        # 动态拼接
+        if self.use_join_sample:
+            hid_js = F.relu(self.join_sample_mlp1(join_samples))
+            hid_js = F.relu(self.join_sample_mlp2(hid_js))
+
+            # 添加dropout
+            # hid_js = self.join_sample_dropout(hid_js)
+
+            hid = torch.cat((hid_sample, hid_predicate, hid_join, hid_js), 1)
+        else:
+            hid = torch.cat((hid_sample, hid_predicate, hid_join), 1)
+        
         hid = F.relu(self.out_mlp1(hid))
         out = torch.sigmoid(self.out_mlp2(hid))
         return out

@@ -1,0 +1,23 @@
+# Ignore data and checkpoint directories
+/data/
+/checkpoints/
+
+# 常见Python忽略项（可选）
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.pt
+*.pth
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# 系统文件
+.DS_Store

@@ -1,7 +1,13 @@
 import numpy as np
+import hashlib
+import torch
 
 
 # Helper functions for data processing
+
+def deterministic_hash(string):
+    # 返回一个确定的整数哈希值
+    return int(hashlib.md5(string.encode('utf-8')).hexdigest(), 16)
 
 def chunks(l, n):
     """Yield successive n-sized chunks from l."""
@@ -83,7 +89,7 @@ def get_min_max_vals(predicates, column_names):
 def normalize_data(val, column_name, column_min_max_vals):
     min_val = column_min_max_vals[column_name][0]
     max_val = column_min_max_vals[column_name][1]
-    val = float(val)
+    # val = float(val)
     val_norm = 0.0
     if max_val > min_val:
         val_norm = (val - min_val) / (max_val - min_val)
@@ -106,12 +112,14 @@ def normalize_labels(labels, min_val=None, max_val=None):
 
 
 def unnormalize_labels(labels_norm, min_val, max_val):
+    if torch.is_tensor(labels_norm):
+        labels_norm = labels_norm.detach().cpu().numpy()
     labels_norm = np.array(labels_norm, dtype=np.float32)
     labels = (labels_norm * (max_val - min_val)) + min_val
     return np.array(np.round(np.exp(labels)), dtype=np.int64)
 
 
-def encode_samples(tables, samples, table2vec):
+def encode_samples(tables, samples, table2vec, use_single_embedding = 0):
     samples_enc = []
     for i, query in enumerate(tables):
         samples_enc.append(list())
@@ -119,14 +127,26 @@ def encode_samples(tables, samples, table2vec):
             sample_vec = []
             # Append table one-hot vector
             sample_vec.append(table2vec[table])
-            # Append bit vector
-            sample_vec.append(samples[i][j])
+            if use_single_embedding == 1:
+                # 此时 samples 是加载进来的 embeddings 字典 { seq_id: {alias: tensor} }
+                parts = table.strip().split(' ')
+                alias = parts[1] if len(parts) > 1 else parts[0]
+                embedding_vec = samples[i][alias]
+                if hasattr(embedding_vec, 'cpu'):
+                    embedding_vec = embedding_vec.cpu().numpy()
+                sample_vec.append(embedding_vec)
+            else:
+                # Append bit vector
+                sample_vec.append(samples[i][j])
             sample_vec = np.hstack(sample_vec)
             samples_enc[i].append(sample_vec)
     return samples_enc
 
 
-def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join2vec):
+def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join2vec, num_hash_buckets=16):
+    # 分段存储：1个位置给数值，num_hash_buckets个位置给字符串哈希
+    val_feature_size = 1 + num_hash_buckets
+
     predicates_enc = []
     joins_enc = []
     for i, query in enumerate(predicates):
@@ -138,15 +158,25 @@ def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join
                 column = predicate[0]
                 operator = predicate[1]
                 val = predicate[2]
-                norm_val = normalize_data(val, column, column_min_max_vals)
+                val_feat = np.zeros(val_feature_size, dtype=np.float32)
+
+                try:
+                    numeric_val = float(val)
+                    norm_val = normalize_data(numeric_val, column, column_min_max_vals)
+                    val_feat[0] = norm_val
+                except (ValueError, TypeError):
+                    target_bucket = deterministic_hash(str(val)) % num_hash_buckets
+                    val_feat[1 + target_bucket] = 1.0
 
                 pred_vec = []
                 pred_vec.append(column2vec[column])
                 pred_vec.append(op2vec[operator])
-                pred_vec.append(norm_val)
+                # pred_vec.append(norm_val)
+                pred_vec.append(val_feat)
                 pred_vec = np.hstack(pred_vec)
             else:
-                pred_vec = np.zeros((len(column2vec) + len(op2vec) + 1))
+                # pred_vec = np.zeros((len(column2vec) + len(op2vec) + 1))
+                pred_vec = np.zeros((len(column2vec) + len(op2vec) + val_feature_size))
 
             predicates_enc[i].append(pred_vec)
 
