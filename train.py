@@ -196,14 +196,18 @@ def train_and_predict(config):
 
     # Train model
     # sample_feats = len(table2vec) + num_materialized_samples
+    table_vec_size = len(table2vec)
     first_sample_tensor = train_data[0][0]
-    sample_feats = first_sample_tensor.shape[1]
+    total_sample_feats = first_sample_tensor.shape[1]
+    sample_vec_size = total_sample_feats - table_vec_size
+
     predicate_feats = len(column2vec) + len(op2vec) + 1 + num_buckets
     join_feats = len(join2vec)
 
-    print(f"Sample features: {sample_feats}, Predicate features: {predicate_feats}")
+    print(f"Table One-Hot dims: {table_vec_size}, Sample (Emb/Bitmap) dims: {sample_vec_size}")
+    print(f"Predicate features: {predicate_feats}")
 
-    model = SetConv(sample_feats, predicate_feats, join_feats, join_sample_feats, hid_units)
+    model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # --- 新增：学习率调度器 ---

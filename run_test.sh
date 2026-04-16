@@ -12,10 +12,11 @@
 # new
 # LRS=(0.002 0.001 0.0005)
 # LRS=(0.0002 0.0001 0.00005)
+
 LRS=(0.0002 0.0001 0.00005 0.002 0.001 0.0005)
 
 # 配置文件路径
-CONFIG_PATH="./data/imdb/config-join.json"
+CONFIG_PATH="./data/stats/config-default.json"
 
 # 指定使用的 GPU ID
 GPU_ID=0
@@ -25,7 +26,7 @@ echo "Starting parallel training on GPU ${GPU_ID}..."
 for lr in "${LRS[@]}"
 do
     # 生成日志文件名
-    LOG_FILE="./data/imdb/runfile/join-${lr}-2.log"
+    LOG_FILE="./data/stats/runfile/default-${lr}-t5-all.log"
     
     echo "Running experiment with LR: ${lr}, logging to: ${LOG_FILE}"
     
