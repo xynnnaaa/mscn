@@ -1,0 +1,9 @@
+  File "/data2/xuyining/learnedcardinalities/tsne_bitmap.py", line 175
+    global BITMAP_PATH, TEST_CSV_PATH, NUM_MATERIALIZED_SAMPLES
+    ^
+SyntaxError: name 'BITMAP_PATH' is used prior to global declaration
+usage: final_single_online_PCA.py [-h] --config CONFIG
+                                  [--total_shards TOTAL_SHARDS]
+                                  [--shard_id SHARD_ID] [--fallback]
+                                  [--no-model]
+final_single_online_PCA.py: error: the following arguments are required: --config

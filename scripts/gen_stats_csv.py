@@ -5,11 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 DB_CONFIG = {
     "host": "localhost",
     "port": 5433,
-    "dbname": "ergastf1",
-    "user": "xuyining"
+    "dbname": "uniform_v3",
+    "user": "xuyining",
+    "password": "123"
 }
 
-OUTPUT_FILE = "./data/ergastf1/column_stats_full.csv"
+OUTPUT_FILE = "/data2/xuyining/learnedcardinalities/data/uniform/column_min_max_vals.csv"
 
 # TABLE_ALIAS = {
 #     "title": "t",
@@ -31,18 +32,19 @@ OUTPUT_FILE = "./data/ergastf1/column_stats_full.csv"
 # }
 
 TABLE_ALIAS = {
-    "qualifying": "erg_qua",
-    "results": "erg_res",
-    "driverstandings": "erg_drivsta",
-    "constructorstandings": "erg_consta",
-    "constructorresults": "erg_conres",
-    "laptimes": "erg_lap",
-    "target": "erg_tar",
-    "pitstops": "erg_pit",
-    "races": "erg_rac",
-    "constructors": "erg_con",
-    "drivers": "erg_driv"
+    "main_table": "t"
 }
+
+# TABLE_ALIAS = {
+#     "part":      "tpch_p",
+#     "supplier":  "tpch_s",
+#     "partsupp":  "tpch_ps",
+#     "customer":  "tpch_c",
+#     "orders":    "tpch_o",
+#     "lineitem":  "tpch_li",
+#     "nation":    "tpch_n",
+#     "region":    "tpch_r"
+# }
 
 def get_numeric_columns(conn):
     cur = conn.cursor()
@@ -52,17 +54,7 @@ def get_numeric_columns(conn):
         FROM information_schema.columns
         WHERE table_schema = 'public'
         AND table_name IN (
-            'qualifying',
-            'results',
-            'driverstandings',
-            'constructorstandings',
-            'constructorresults',
-            'laptimes',
-            'target',
-            'pitstops',
-            'races',
-            'constructors',
-            'drivers'
+            'main_table'
         )
         AND data_type IN (
             'integer', 'bigint', 'smallint',

@@ -51,6 +51,7 @@ def get_metrics(model, data_loader, cuda, min_val, max_val):
 
 def print_qerror_from_array(qerror):
     print("Median: {:.4f}".format(np.median(qerror)))
+    print("80th percentile: {:.4f}".format(np.percentile(qerror, 80)))
     print("90th percentile: {:.4f}".format(np.percentile(qerror, 90)))
     print("95th percentile: {:.4f}".format(np.percentile(qerror, 95)))
     print("99th percentile: {:.4f}".format(np.percentile(qerror, 99)))

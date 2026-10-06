@@ -16,7 +16,7 @@ def clean_val(val_str):
 
 def parse_sql_to_csv_row(line):
     line = line.strip()
-    if not line or "||" not in line:
+    if not line:
         return None
 
     parts = line.split("||")
@@ -53,7 +53,10 @@ def parse_sql_to_csv_row(line):
                 involved_aliases = set(col.table for col in cols if col.table)
                 
                 if len(involved_aliases) >= 2:
-                    join_conditions.append(condition.sql().replace(" ", ""))
+                    # 去掉最外层可能的括号
+                    condition_sql = condition.sql().replace(" ", "")
+                    condition_sql = condition_sql.strip("()")
+                    join_conditions.append(condition_sql)
                 else:
                     # 针对 Predicate 的精细化处理
                     if isinstance(condition, (exp.Binary, exp.EQ, exp.GT, exp.LT, exp.GTE, exp.LTE, exp.NEQ)):
@@ -82,6 +85,7 @@ def parse_sql_to_csv_row(line):
                         predicates.append(clean_val(condition.sql().replace(" ", "")))
 
         return f"{tables_part}#{','.join(join_conditions)}#{','.join(predicates)}#{true_cardinality}"
+        # return f"{tables_part}#{','.join(join_conditions)}#{','.join(predicates)}#"
 
     except Exception as e:
         return None

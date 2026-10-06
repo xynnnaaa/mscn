@@ -3,7 +3,6 @@ import time
 import os
 import json
 import torch
-import copy
 import numpy as np
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
@@ -12,6 +11,18 @@ import datetime
 from mscn.util import *
 from mscn.data import get_train_datasets, load_data, make_dataset, load_and_encode_all_data
 from mscn.model import SetConv
+
+import random
+def set_seed(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def unnormalize_torch(vals, min_val, max_val):
@@ -78,6 +89,7 @@ def print_qerror(preds_unnorm, labels_unnorm):
     qerror = np.maximum(preds / (labels + 1e-5), labels / (preds + 1e-5))
 
     print("Median: {}".format(np.median(qerror)))
+    print("80th percentile: {}".format(np.percentile(qerror, 80)))
     print("90th percentile: {}".format(np.percentile(qerror, 90)))
     print("95th percentile: {}".format(np.percentile(qerror, 95)))
     print("99th percentile: {}".format(np.percentile(qerror, 99)))
@@ -86,6 +98,7 @@ def print_qerror(preds_unnorm, labels_unnorm):
 
 def print_qerror_from_array(qerror):
     print("Median: {:.4f}".format(np.median(qerror)))
+    print("80th percentile: {:.4f}".format(np.percentile(qerror, 80)))
     print("90th percentile: {:.4f}".format(np.percentile(qerror, 90)))
     print("95th percentile: {:.4f}".format(np.percentile(qerror, 95)))
     print("99th percentile: {:.4f}".format(np.percentile(qerror, 99)))
@@ -151,28 +164,35 @@ def train_and_predict(config):
     use_single_embedding = config.get("use_single_embedding", 0)
     test_emb_path = config.get("test_embedding_file", "")
 
+    # --- 新增：读取是否包含未命中特征的开关 ---
+    has_unmatched_embedding = config.get("has_unmatched_embedding", 0)
+
     results_dir = config.get("results_dir", "results") # 保存目录
     workloads_dir = config.get("workloads_dir", "workloads") # 数据集目录
     workload_name = config.get("workload_name", "imdb") # 数据集名称
 
     use_join_embedding = config.get("use_join_embedding", 0)
+    seed = config.get("seed")
 
     model_id = f"{workload_name}_{trainset}_{lr}_{num_epochs}_{batch_size}"
-    checkpoint_dir = "/data2/xuyining/learnedcardinalities/checkpoints"
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    # 添加时间戳
-    timestamp = datetime.datetime.now().strftime("%m%d_%H%M%S")
-
-    # best_model_path = os.path.join(checkpoint_dir, f"exp_{timestamp}_best.pt")
-    # print(f"Training model will be saved to: {best_model_path}")
-
-    models_save_path = os.path.join(checkpoint_dir, f"exp_{timestamp}_all_epochs.pt")
-    print(f"All epochs of the model will be saved to: {models_save_path}")
+    best_model_path = config.get("model_output_path")
+    if best_model_path:
+        model_output_dir = os.path.dirname(best_model_path)
+        if model_output_dir:
+            os.makedirs(model_output_dir, exist_ok=True)
+    else:
+        checkpoint_dir = "/data1/xuyining/learnedcardinalities/checkpoints"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%m%d_%H%M%S")
+        best_model_path = os.path.join(checkpoint_dir, f"exp_{timestamp}_best.pt")
+    print(f"Best model will be saved to: {best_model_path}")
 
     print(f"learning rate: {lr}")
     print(f"batch size: {batch_size}")
     print(f"hidden units: {hid_units}")
     print(f"epochs: {num_epochs}")
+    if seed is not None:
+        print(f"random seed: {seed}")
 
     print("Loading and encoding all datasets (global scan)...")
     time_start = time.time()
@@ -189,7 +209,7 @@ def train_and_predict(config):
 
     # 动态确定维度
     # train_dataset[0][3] 是 join_samples
-    if use_join_embedding == 1:
+    if use_join_embedding in [1, 2, 3]:
         join_sample_feats = train_data[0][3].shape[0]
     else:
         join_sample_feats = 0 # 传入 0，模型会自动回退到 3 个头的结构
@@ -206,32 +226,31 @@ def train_and_predict(config):
 
     print(f"Table One-Hot dims: {table_vec_size}, Sample (Emb/Bitmap) dims: {sample_vec_size}")
     print(f"Predicate features: {predicate_feats}")
+    print(f"Has Unmatched Embedding: {has_unmatched_embedding == 1}")
 
-    model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding)
+    model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding, has_unmatched_embedding=has_unmatched_embedding)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # --- 新增：学习率调度器 ---
     # mode='min'：监控指标越小越好（针对 Loss）
     # factor=0.5：触发时学习率减半
-    # patience=15：如果连续 15 个 epoch 验证集 Loss 都不降，就触发衰减
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15)
+    # patience=20：如果连续 20 个 epoch 验证集 Loss 都不降，就触发衰减
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
 
     if cuda:
         model.cuda()
 
+    # g = torch.Generator()
+    # g.manual_seed(config["seed"])
+
+    # train_data_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, generator=g)
     train_data_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     val_data_loader = DataLoader(val_data, batch_size=batch_size)
     test_data_loader = DataLoader(test_data, batch_size=batch_size)
 
-    all_epoch_states = {}
-    best_tracker = {
-        "val_loss_val": float('inf'), "val_loss_ep": -1, # <--- 新增：记录最佳验证集 Loss
-        "val_mean_val": float('inf'), "val_mean_ep": -1,
-        "val_median_val": float('inf'), "val_median_ep": -1,
-        "test_loss_val": float('inf'), "test_loss_ep": -1, # <--- 新增：记录最佳测试集 Loss
-        "test_mean_val": float('inf'), "test_mean_ep": -1,
-        "test_median_val": float('inf'), "test_median_ep": -1,
-    }
+    best_val_loss = float("inf")
+    best_epoch = -1
+    best_model_state = None
 
     for epoch in range(num_epochs):
         loss_total = 0.
@@ -254,124 +273,70 @@ def train_and_predict(config):
             loss.backward()
 
             # --- 新增：梯度裁剪，防止梯度爆炸 ---
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
 
         print("\nEpoch {}, Train Loss: {:.4f}".format(epoch, loss_total / len(train_data_loader)))
 
-        # # 验证阶段
-        # model.eval()
-        # val_loss_total = 0.
-        # with torch.no_grad():
-        #     for batch_idx, data_batch in enumerate(val_data_loader):
-        #         samples, predicates, joins, join_samples, targets, sample_masks, predicate_masks, join_masks = data_batch
-
-        #         if cuda:
-        #             samples, predicates, joins, join_samples, targets = samples.cuda(), predicates.cuda(), joins.cuda(), join_samples.cuda(), targets.cuda()
-        #             sample_masks, predicate_masks, join_masks = sample_masks.cuda(), predicate_masks.cuda(), join_masks.cuda()
-        #         samples, predicates, joins, join_samples, targets = Variable(samples), Variable(predicates), Variable(joins), Variable(join_samples), Variable(targets)
-        #         sample_masks, predicate_masks, join_masks = Variable(sample_masks), Variable(predicate_masks), Variable(join_masks)
-
-        #         outputs = model(samples, predicates, joins, join_samples, sample_masks, predicate_masks, join_masks)
-        #         val_loss = qerror_loss(outputs, targets.float(), min_val, max_val)
-        #         val_loss_total += val_loss.item()
-
-        # val_loss_avg = val_loss_total / len(val_data_loader)
-        # print("Epoch {}, Validation Loss: {}".format(epoch, val_loss_avg))
 
         # 验证集评估
-        val_qerrors, val_loss_avg = get_metrics(model, val_data_loader, cuda, min_val, max_val)
+        _, val_loss_avg = get_metrics(model, val_data_loader, cuda, min_val, max_val)
         print("Epoch {}, Validation Loss: {:.4f}".format(epoch, val_loss_avg))
         # print(f"--- Epoch {epoch} Validation Set qerror ---")
         # print_qerror_from_array(val_qerrors)
 
-        # --- 新增：让 Scheduler 根据当前的 验证集 Loss 决定是否要减小学习率 ---
-        scheduler.step(val_loss_avg)
-         # 当前学习率打印 (可选，方便你在日志里看它什么时候降了)
-        current_lr = optimizer.param_groups[0]['lr']
-        if current_lr != lr:
-            print(f" [!] Learning Rate adjusted to: {current_lr}")
-            lr = current_lr # 仅仅是为了防止重复打印
+        # # --- 新增：让 Scheduler 根据当前的 验证集 Loss 决定是否要减小学习率 ---
+        # scheduler.step(val_loss_avg)
+        #  # 当前学习率打印 (可选，方便你在日志里看它什么时候降了)
+        # current_lr = optimizer.param_groups[0]['lr']
+        # if current_lr != lr:
+        #     print(f" [!] Learning Rate adjusted to: {current_lr}")
+        #     lr = current_lr # 仅仅是为了防止重复打印
 
-        # 同时每个epoch也在测试集上评估性能
-        test_qerrors, test_loss_avg = get_metrics(model, test_data_loader, cuda, min_val, max_val)
-        print("Epoch {}, Test Loss: {:.4f}".format(epoch, test_loss_avg))
-        # print(f"--- Epoch {epoch} Test Set qerror ---")
-        # print_qerror_from_array(test_qerrors)
-
-        update_cur_epoch = False
-
-        # 记录验证集 Loss 最小的 Epoch
-        if val_loss_avg < best_tracker["val_loss_val"]:
-            best_tracker["val_loss_val"] = val_loss_avg
-            best_tracker["val_loss_ep"] = epoch
+        # 只根据验证集 Loss 选择模型，测试集不参与 checkpoint 决策。
+        if val_loss_avg < best_val_loss:
+            best_val_loss = val_loss_avg
+            best_epoch = epoch
             print(f" --> New best model found at epoch {epoch} with validation loss: {val_loss_avg:.4f}")
-            update_cur_epoch = True
-        
-        # 记录测试集 Loss 最小的 Epoch
-        if test_loss_avg < best_tracker["test_loss_val"]:
-            best_tracker["test_loss_val"] = test_loss_avg
-            best_tracker["test_loss_ep"] = epoch
-            print(f" --> New best model found at epoch {epoch} with test loss: {test_loss_avg:.4f}")
-            update_cur_epoch = True
+            best_model_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
 
-        v_mean, v_median = np.mean(val_qerrors), np.median(val_qerrors)
-        t_mean, t_median = np.mean(test_qerrors), np.median(test_qerrors)
+    if best_model_state is None:
+        raise RuntimeError("No best model was selected. Ensure epochs is greater than zero.")
 
-        if v_mean < best_tracker["val_mean_val"]:
-            best_tracker["val_mean_val"] = v_mean
-            best_tracker["val_mean_ep"] = epoch
-            update_cur_epoch = True
-        if v_median < best_tracker["val_median_val"]:
-            best_tracker["val_median_val"] = v_median
-            best_tracker["val_median_ep"] = epoch
-            update_cur_epoch = True
+    # Optional diagnostic checkpoint, captured BEFORE restoring the best model.
+    final_model_path = config.get("final_model_output_path")
+    if final_model_path:
+        if os.path.abspath(final_model_path) == os.path.abspath(best_model_path):
+            raise ValueError("Final and best model output paths must differ")
+        os.makedirs(os.path.dirname(os.path.abspath(final_model_path)), exist_ok=True)
+        torch.save({name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()}, final_model_path)
+        print(f"Final model saved to {final_model_path} (epoch {num_epochs - 1})")
 
-        if t_mean < best_tracker["test_mean_val"]:
-            best_tracker["test_mean_val"] = t_mean
-            best_tracker["test_mean_ep"] = epoch
-            update_cur_epoch = True
-        if t_median < best_tracker["test_median_val"]:
-            best_tracker["test_median_val"] = t_median
-            best_tracker["test_median_ep"] = epoch
-            update_cur_epoch = True
-
-        if update_cur_epoch:
-            # 只有在有更新时保存当前 epoch 的模型状态
-            epoch_state = copy.deepcopy(model.state_dict())
-            for k, v in epoch_state.items():
-                epoch_state[k] = v.cpu()
-            all_epoch_states[epoch] = epoch_state
-
-    torch.save(all_epoch_states, models_save_path)
-    print(f"\nAll epochs saved successfully to {models_save_path}")
+    # checkpoint 中只保存验证集 Loss 最低模型的原始 state_dict。
+    torch.save(best_model_state, best_model_path)
+    print(
+        f"\nBest model saved to {best_model_path} "
+        f"(epoch {best_epoch}, validation loss {best_val_loss:.4f})"
+    )
 
     print("\n" + "="*60)
     print("FINAL SUMMARY & EVALUATIONS ON TEST SET")
     print("="*60)
 
-    evaluation_targets = [
-        ("Validation Loss", best_tracker["val_loss_ep"]),
-        ("Validation Mean", best_tracker["val_mean_ep"]),
-        ("Validation Median", best_tracker["val_median_ep"]),
-        ("Test Loss", best_tracker["test_loss_ep"]),
-        ("Test Mean", best_tracker["test_mean_ep"]),
-        ("Test Median", best_tracker["test_median_ep"])
-    ]
+    print(f"Best Validation Loss: {best_val_loss:.4f} at epoch {best_epoch}")
+    print(f"\n>>> Evaluating best-validation model (Epoch: {best_epoch}) on TEST SET")
+    model.load_state_dict(best_model_state)
+    if cuda:
+        model.cuda()
 
-    for model_desc, ep in evaluation_targets:
-        if ep == -1:
-            print(f"\n>>> Skipping {model_desc}: No improvement recorded.")
-            continue
-        print(f"\n>>> Evaluating Model with Best {model_desc} (Epoch: {ep}) on TEST SET")
-        # 从字典中加载对应的 epoch 状态
-        model.load_state_dict(all_epoch_states[ep])
-        if cuda: 
-            model.cuda()
-        
-        t_qerrors, _ = get_metrics(model, test_data_loader, cuda, min_val, max_val)
-        print_qerror_from_array(t_qerrors)
+    t_qerrors, test_loss_avg = get_metrics(model, test_data_loader, cuda, min_val, max_val)
+    print(f"Test Loss: {test_loss_avg:.4f}")
+    print_qerror_from_array(t_qerrors)
     print("="*60 + "\n")
 
 
@@ -431,14 +396,47 @@ def train_and_predict(config):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", help="JSON config file path", required=True)
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate (overrides config if provided)")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate (overrides config if provided)")
+    parser.add_argument("--batch", type=int, default=None, help="Batch size (overrides config if provided)")
+    parser.add_argument("--model-output-path", default=None, help="Model output path (overrides config if provided)")
+    seed_options = parser.add_mutually_exclusive_group()
+    seed_options.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    seed_options.add_argument("--no-seed", action="store_true", help="Ignore any seed in the config; use an unseeded run")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default=None, help="Override config cuda setting")
+    parser.add_argument("--epochs", type=int, default=None, help="Epoch count override")
+    parser.add_argument("--final-model-output-path", default=None,
+                        help="Additionally save the final epoch state before restoring the best checkpoint")
+
     args = parser.parse_args()
+
+    if args.seed is not None:
+        set_seed(args.seed)
 
     with open(args.config, 'r') as f:
         config = json.load(f)
 
     if args.lr is not None:
         config["lr"] = args.lr
+    if args.batch is not None:
+        config["batch"] = args.batch
+    if args.model_output_path is not None:
+        config["model_output_path"] = args.model_output_path
+
+    if args.seed is not None:
+        config["seed"] = args.seed
+    if args.no_seed:
+        config.pop("seed", None)
+    if args.device is not None:
+        config["cuda"] = args.device == "cuda"
+    if args.epochs is not None:
+        if args.epochs <= 0:
+            parser.error("--epochs must be positive")
+        config["epochs"] = args.epochs
+    if args.final_model_output_path is not None:
+        config["final_model_output_path"] = args.final_model_output_path
+    if config.get("final_model_output_path") and config.get("model_output_path"):
+        if os.path.abspath(config["final_model_output_path"]) == os.path.abspath(config["model_output_path"]):
+            parser.error("Final and best model output paths must differ")
 
     train_and_predict(config)
 

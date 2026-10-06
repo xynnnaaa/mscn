@@ -6,7 +6,6 @@ import torch
 # Helper functions for data processing
 
 def deterministic_hash(string):
-    # 返回一个确定的整数哈希值
     return int(hashlib.md5(string.encode('utf-8')).hexdigest(), 16)
 
 def chunks(l, n):
@@ -127,7 +126,7 @@ def encode_samples(tables, samples, table2vec, use_single_embedding = 0):
             sample_vec = []
             # Append table one-hot vector
             sample_vec.append(table2vec[table])
-            if use_single_embedding == 1:
+            if use_single_embedding > 0:
                 # 此时 samples 是加载进来的 embeddings 字典 { seq_id: {alias: tensor} }
                 parts = table.strip().split(' ')
                 alias = parts[1] if len(parts) > 1 else parts[0]
@@ -143,7 +142,16 @@ def encode_samples(tables, samples, table2vec, use_single_embedding = 0):
     return samples_enc
 
 
-def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join2vec, num_hash_buckets=16):
+def encode_data(
+    predicates,
+    joins,
+    column_min_max_vals,
+    column2vec,
+    op2vec,
+    join2vec,
+    num_hash_buckets=16,
+    allow_unknown_features=False,
+):
     # 分段存储：1个位置给数值，num_hash_buckets个位置给字符串哈希
     val_feature_size = 1 + num_hash_buckets
 
@@ -169,8 +177,12 @@ def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join
                     val_feat[1 + target_bucket] = 1.0
 
                 pred_vec = []
-                pred_vec.append(column2vec[column])
-                pred_vec.append(op2vec[operator])
+                if allow_unknown_features:
+                    pred_vec.append(column2vec.get(column, np.zeros(len(column2vec), dtype=np.float32)))
+                    pred_vec.append(op2vec.get(operator, np.zeros(len(op2vec), dtype=np.float32)))
+                else:
+                    pred_vec.append(column2vec[column])
+                    pred_vec.append(op2vec[operator])
                 # pred_vec.append(norm_val)
                 pred_vec.append(val_feat)
                 pred_vec = np.hstack(pred_vec)
@@ -182,6 +194,9 @@ def encode_data(predicates, joins, column_min_max_vals, column2vec, op2vec, join
 
         for predicate in joins[i]:
             # Join instruction
-            join_vec = join2vec[predicate]
+            if allow_unknown_features:
+                join_vec = join2vec.get(predicate, np.zeros(len(join2vec), dtype=np.float32))
+            else:
+                join_vec = join2vec[predicate]
             joins_enc[i].append(join_vec)
     return predicates_enc, joins_enc
