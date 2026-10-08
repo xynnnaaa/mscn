@@ -199,6 +199,7 @@ from torch.utils.data import DataLoader
 # 根据你的目录结构导入
 from mscn.data import load_and_encode_all_data
 from mscn.model import SetConv
+from mscn.mixture import mixture_options
 
 def unnormalize_torch(vals, min_val, max_val):
     vals = (vals * (max_val - min_val)) + min_val
@@ -362,8 +363,8 @@ def load_model_and_infer(train_config, model_path):
     
     table2vec, column2vec, op2vec, join2vec = dicts
     
-    # 💡 修改：兼容模式 1 (Bitmap) 和模式 2 (Bitmap+Emb+PCA)
-    if use_join_embedding in [1, 2]:
+    # Match the training loader: bitmap, bitmap+embedding+PCA, or bitmap+embedding.
+    if use_join_embedding in [1, 2, 3]:
         join_sample_feats = train_data[0][3].shape[0]
     else:
         join_sample_feats = 0
@@ -380,7 +381,8 @@ def load_model_and_infer(train_config, model_path):
     print(f"Feature Flags -> Single_Emb: {use_single_embedding} | Join_Emb: {use_join_embedding} | Unmatched: {has_unmatched_embedding == 1}")
     
     # 💡 修改：补齐实例化参数，传入 has_unmatched_embedding
-    model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding, has_unmatched_embedding=has_unmatched_embedding)
+    model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding, has_unmatched_embedding=has_unmatched_embedding,
+                    single_mixture_options=mixture_options(train_config))
     
     model_state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(model_state)

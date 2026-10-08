@@ -143,12 +143,12 @@ import torch
 import numpy as np
 
 # ==================== 用户配置区域 ====================
-base_csv_path = "/data2/xuyining/learnedcardinalities/data/imdb/results/no-join.csv"
-output_csv_path = "/data2/xuyining/learnedcardinalities/data/imdb/runfile_ablation/change_w/200/join-merge-2.csv"
+base_csv_path = "/data2/xuyining/learnedcardinalities/data/tpch-skew/results/no-join.csv"
+output_csv_path = "/data2/xuyining/learnedcardinalities/data/tpch-skew/results/full-merge.csv"
 
 versions = [
-    ("/data2/xuyining/learnedcardinalities/data/imdb/runfile_ablation/change_w/200/join-2.csv",
-     "/data2/xuyining/Sampler/join_sampling/new_model_results/imdb/200/embedding/sample_hit_status_test.pt")
+    ("/data2/xuyining/learnedcardinalities/data/tpch-skew/results/full.csv",
+     "/data2/xuyining/Sampler/join_sampling/new_model_results/tpch/embedding/pca_hit_status_test.pt")
 ]
 # ====================================================
 

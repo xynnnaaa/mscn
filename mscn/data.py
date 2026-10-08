@@ -430,7 +430,7 @@ def load_data(
     elif num_materialized_samples == 500:
         bitmap_path = file_prefix + "-500.bitmaps"
     else:
-        bitmap_path = file_prefix + ".bitmaps"
+        bitmap_path = file_prefix + "-qa.bitmaps"
 
     if bitmap_file:
         bitmap_path = bitmap_file
@@ -621,6 +621,11 @@ def load_and_encode_train_data(config):
 
 
 def load_and_encode_all_data(config):
+    from mscn.mixture import mixture_options, load_mixture_samples
+    adaptive = mixture_options(config) is not None
+    if adaptive:
+        print("[Single Mixture] Enabled: QA/random feature fusion; gate uses query structure only.", flush=True)
+        print("[Single Mixture] Legacy sample loading is skipped; mixture inputs are loaded separately.", flush=True)
     workloads_dir = config["workloads_dir"]
     train_prefix = os.path.join(workloads_dir, config["trainset"])
     test_prefix = os.path.join(workloads_dir, config["testset"])
@@ -658,13 +663,14 @@ def load_and_encode_all_data(config):
     t_joins, t_preds, t_tables, t_samples, t_label = load_data(
         train_prefix,
         num_samples,
-        use_single_embedding,
+        -1 if adaptive else use_single_embedding,
         config.get("train_embedding_file"),
         config.get("train_bitmap_file"),
     )
     
     # 💡 [修改] 调用全新的混合特征编码层 (训练集)
-    t_samples_enc = hybrid_encode_samples(t_tables, t_samples, table2vec, use_single_embedding)
+    t_samples_enc = (load_mixture_samples(config, "train", t_tables, table2vec) if adaptive
+                     else hybrid_encode_samples(t_tables, t_samples, table2vec, use_single_embedding))
     allow_unknown_features = config.get("allow_unknown_features", False)
     t_preds_enc, t_joins_enc = encode_data(
         t_preds,
@@ -704,13 +710,14 @@ def load_and_encode_all_data(config):
     test_joins, test_preds, test_tables, test_samples, test_label_raw = load_data(
         test_prefix,
         num_samples,
-        use_single_embedding,
+        -1 if adaptive else use_single_embedding,
         test_emb_path,
         config.get("test_bitmap_file"),
     )
     
     # 💡 [修改] 调用全新的混合特征编码层 (测试集)
-    test_samples_enc = hybrid_encode_samples(test_tables, test_samples, table2vec, use_single_embedding)
+    test_samples_enc = (load_mixture_samples(config, "test", test_tables, table2vec) if adaptive
+                        else hybrid_encode_samples(test_tables, test_samples, table2vec, use_single_embedding))
     test_preds_enc, test_joins_enc = encode_data(
         test_preds,
         test_joins,

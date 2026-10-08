@@ -355,7 +355,7 @@ import torch.nn.functional as F
 # Define model architecture
 
 class SetConv(nn.Module):
-    def __init__(self, table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding=0, dropout_p=0.1, has_unmatched_embedding=0):
+    def __init__(self, table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding=0, dropout_p=0.1, has_unmatched_embedding=0, single_mixture_options=None):
         super(SetConv, self).__init__()
 
         self.table_vec_size = table_vec_size
@@ -363,9 +363,20 @@ class SetConv(nn.Module):
         self.has_unmatched_embedding = has_unmatched_embedding
 
         self.pca_dim = 0
+        self.use_adaptive_single_mixture = single_mixture_options is not None
 
 
-        if self.use_single_embedding == 1:
+        if self.use_adaptive_single_mixture:
+            if use_single_embedding != 1 or has_unmatched_embedding != 0:
+                raise ValueError("Single mixture requires mode 1 without unmatched embeddings")
+            from mscn.mixture import SingleSampleMixture
+            self.single_mixture = SingleSampleMixture(table_vec_size, hid_units, **single_mixture_options)
+            if sample_vec_size != self.single_mixture.input_dim:
+                raise ValueError("Single mixture feature width does not match configuration")
+            self.single_emb_mlp1 = nn.Linear(self.single_mixture.output_dim, hid_units)
+            self.single_emb_drop = nn.Dropout(p=dropout_p)
+            combined_sample_feats = table_vec_size + hid_units
+        elif self.use_single_embedding == 1:
 
             # ==========================================
             # Mode 1: 混合模式 (Bitmap + Embedding)
@@ -530,7 +541,13 @@ class SetConv(nn.Module):
         t_vecs = samples[:, :, :self.table_vec_size]   # 表的 One-Hot 部分
         s_vecs = samples[:, :, self.table_vec_size:]   # 特征数据段
 
-        if self.use_single_embedding == 1:
+        if self.use_adaptive_single_mixture:
+            # These contexts depend only on query structure, never on the sample gate.
+            hid_predicate = self._query_context(predicates, predicate_mask, self.predicate_mlp1, self.predicate_mlp2)
+            hid_join = self._query_context(joins, join_mask, self.join_mlp1, self.join_mlp2)
+            s_vecs = self.single_mixture(s_vecs, t_vecs, hid_predicate, hid_join, sample_mask)
+            s_vecs = self.single_emb_drop(F.leaky_relu(self.single_emb_mlp1(s_vecs), negative_slope=0.01))
+        elif self.use_single_embedding == 1:
             # 1. 拆解特征：切分出 1000 维的原始 Bitmap 和 2304 维的 Embedding 段
             bitmap_part = s_vecs[:, :, :self.bitmap_dim]
             sub_s_vecs = s_vecs[:, :, self.bitmap_dim:]
@@ -597,19 +614,20 @@ class SetConv(nn.Module):
         sample_norm = sample_mask.sum(1, keepdim=False)
         hid_sample = hid_sample / sample_norm  
 
-        hid_predicate = F.relu(self.predicate_mlp1(predicates))
-        hid_predicate = F.relu(self.predicate_mlp2(hid_predicate))
-        hid_predicate = hid_predicate * predicate_mask
-        hid_predicate = torch.sum(hid_predicate, dim=1, keepdim=False)
-        predicate_norm = predicate_mask.sum(1, keepdim=False)
-        hid_predicate = hid_predicate / predicate_norm
+        if not self.use_adaptive_single_mixture:
+            hid_predicate = F.relu(self.predicate_mlp1(predicates))
+            hid_predicate = F.relu(self.predicate_mlp2(hid_predicate))
+            hid_predicate = hid_predicate * predicate_mask
+            hid_predicate = torch.sum(hid_predicate, dim=1, keepdim=False)
+            predicate_norm = predicate_mask.sum(1, keepdim=False)
+            hid_predicate = hid_predicate / predicate_norm
 
-        hid_join = F.relu(self.join_mlp1(joins))
-        hid_join = F.relu(self.join_mlp2(hid_join))
-        hid_join = hid_join * join_mask
-        hid_join = torch.sum(hid_join, dim=1, keepdim=False)
-        join_norm = join_mask.sum(1, keepdim=False)
-        hid_join = hid_join / join_norm
+            hid_join = F.relu(self.join_mlp1(joins))
+            hid_join = F.relu(self.join_mlp2(hid_join))
+            hid_join = hid_join * join_mask
+            hid_join = torch.sum(hid_join, dim=1, keepdim=False)
+            join_norm = join_mask.sum(1, keepdim=False)
+            hid_join = hid_join / join_norm
 
         if self.use_join_sample:
             # --- 新增：切分 Join 特征并分别做 LayerNorm ---
@@ -644,3 +662,8 @@ class SetConv(nn.Module):
         hid = F.relu(self.out_mlp1(hid))
         out = torch.sigmoid(self.out_mlp2(hid))
         return out
+
+    @staticmethod
+    def _query_context(values, mask, first, second):
+        hidden = F.relu(second(F.relu(first(values)))) * mask
+        return hidden.sum(dim=1) / mask.sum(dim=1).clamp_min(1)

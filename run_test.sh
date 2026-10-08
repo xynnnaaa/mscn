@@ -1,8 +1,8 @@
 
 LRS=(0.00005 0.0001 0.0002 0.0005 0.001 0.002)
 
-CONFIG_PATH="./data/imdb/runfile_ablation/change_pca/pca-3-mean/config-single-pca.json"
-GPUS=(1 1 2)
+CONFIG_PATH="./data/tpch-skew/config-full.json"
+GPUS=(1 2 3 0)
 
 echo "Starting parallel training on GPUs ${GPUS[*]}..."
 
@@ -10,7 +10,7 @@ for i in "${!LRS[@]}"
 do
     lr=${LRS[$i]}
     GPU_ID=${GPUS[$((i % ${#GPUS[@]}))]}
-    LOG_FILE="./data/imdb/runfile_ablation/change_pca/pca-3-mean/${lr}.log"
+    LOG_FILE="./data/tpch-skew/runfile/full-${lr}-2.log"
     
     echo "Running experiment with LR: ${lr} on GPU ${GPU_ID}, logging to: ${LOG_FILE}"
 
