@@ -193,7 +193,7 @@ def train_and_predict(config):
         if model_output_dir:
             os.makedirs(model_output_dir, exist_ok=True)
     else:
-        checkpoint_dir = "/data1/xuyining/learnedcardinalities/checkpoints"
+        checkpoint_dir = "/data2/xuyining/learnedcardinalities/checkpoints"
         os.makedirs(checkpoint_dir, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%m%d_%H%M%S")
         best_model_path = os.path.join(checkpoint_dir, f"exp_{timestamp}_best.pt")

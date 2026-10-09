@@ -152,11 +152,12 @@ class SingleSampleMixture(nn.Module):
         parts = [bitmap, mean]
         if self.pca_dim:
             raw_pca = source[..., b + e:]
-            pca_valid = (raw_pca != 0).any(dim=-1, keepdim=True).to(source.dtype)
+            # pca_valid = (raw_pca != 0).any(dim=-1, keepdim=True).to(source.dtype)
             pca = self.pca_norm(raw_pca)
             if self.pca_dim != e:
                 pca = F.leaky_relu(self.pca_proj(pca), negative_slope=0.01)
-            parts.append(pca * pca_valid)
+            # parts.append(pca * pca_valid)
+            parts.append(pca)
         # Mask padding after affine encoders; zero-match means retain _EMPTY.
         return torch.cat(parts, dim=-1) * active
 
