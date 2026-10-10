@@ -355,7 +355,7 @@ import torch.nn.functional as F
 # Define model architecture
 
 class SetConv(nn.Module):
-    def __init__(self, table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding=0, dropout_p=0.1, has_unmatched_embedding=0, single_mixture_options=None):
+    def __init__(self, table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding=0, dropout_p=0.1, has_unmatched_embedding=0, single_mixture_options=None, join_mixture_options=None):
         super(SetConv, self).__init__()
 
         self.table_vec_size = table_vec_size
@@ -364,6 +364,7 @@ class SetConv(nn.Module):
 
         self.pca_dim = 0
         self.use_adaptive_single_mixture = single_mixture_options is not None
+        self.use_adaptive_join_mixture = join_mixture_options is not None
 
 
         if self.use_adaptive_single_mixture:
@@ -513,7 +514,16 @@ class SetConv(nn.Module):
         self.use_join_sample = join_sample_feats > 0
         self.dropout_p = dropout_p
 
-        if self.use_join_sample:
+        if self.use_adaptive_join_mixture:
+            from mscn.mixture import JoinSampleMixture
+            self.join_mixture = JoinSampleMixture(table_vec_size, hid_units, **join_mixture_options)
+            if join_sample_feats != self.join_mixture.input_dim:
+                raise ValueError("Join mixture feature width does not match configuration")
+            self.join_sample_mlp1 = nn.Linear(self.join_mixture.output_dim, hid_units)
+            self.join_sample_dropout = nn.Dropout(p=dropout_p)
+            self.out_mlp1 = nn.Linear(hid_units * 4, hid_units)
+            print("Using join mixture: query-only gate, unprojected bitmap, masked invalid PCA.")
+        elif self.use_join_sample:
             print(f"Using join sample embedding model. Join feats: {join_sample_feats}")
             
             # --- 新增：针对 Join 特征动态创建 LayerNorm ---
@@ -541,10 +551,11 @@ class SetConv(nn.Module):
         t_vecs = samples[:, :, :self.table_vec_size]   # 表的 One-Hot 部分
         s_vecs = samples[:, :, self.table_vec_size:]   # 特征数据段
 
-        if self.use_adaptive_single_mixture:
+        if self.use_adaptive_single_mixture or self.use_adaptive_join_mixture:
             # These contexts depend only on query structure, never on the sample gate.
             hid_predicate = self._query_context(predicates, predicate_mask, self.predicate_mlp1, self.predicate_mlp2)
             hid_join = self._query_context(joins, join_mask, self.join_mlp1, self.join_mlp2)
+        if self.use_adaptive_single_mixture:
             s_vecs = self.single_mixture(s_vecs, t_vecs, hid_predicate, hid_join, sample_mask)
             s_vecs = self.single_emb_drop(F.leaky_relu(self.single_emb_mlp1(s_vecs), negative_slope=0.01))
         elif self.use_single_embedding == 1:
@@ -614,7 +625,7 @@ class SetConv(nn.Module):
         sample_norm = sample_mask.sum(1, keepdim=False)
         hid_sample = hid_sample / sample_norm  
 
-        if not self.use_adaptive_single_mixture:
+        if not (self.use_adaptive_single_mixture or self.use_adaptive_join_mixture):
             hid_predicate = F.relu(self.predicate_mlp1(predicates))
             hid_predicate = F.relu(self.predicate_mlp2(hid_predicate))
             hid_predicate = hid_predicate * predicate_mask
@@ -631,7 +642,10 @@ class SetConv(nn.Module):
 
         if self.use_join_sample:
             # --- 新增：切分 Join 特征并分别做 LayerNorm ---
-            if self.join_sample_feats > 100:
+            if self.use_adaptive_join_mixture:
+                join_samples_input = self.join_mixture(
+                    join_samples, t_vecs, hid_predicate, hid_join, sample_mask)
+            elif self.join_sample_feats > 100:
                 j_b = join_samples[:, :100]        # 前 100 维是 Bitmap
                 j_e = join_samples[:, 100:868]     # 中间 768 维是 Embedding
                 j_e = self.join_emb_norm(j_e)      # 独立归一化

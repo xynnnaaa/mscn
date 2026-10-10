@@ -188,3 +188,106 @@ class SingleSampleMixture(nn.Module):
                                        (cr * (1 - cq) * sample_mask).sum(),
                                        (neither * sample_mask).sum())).detach()
         return mixed
+
+
+def join_mixture_options(config):
+    """Join files contain one [bitmap, mean, PCA] vector per query/source."""
+    if not config.get('use_adaptive_join_mixture', False):
+        return None
+    if config.get('use_join_embedding', 0) != 2:
+        raise ValueError('Join mixture requires use_join_embedding=2')
+    options = dict(bitmap_dim=config.get('join_bitmap_dim', 100),
+                   embedding_dim=config.get('join_embedding_dim', 768),
+                   pca_dim=config.get('join_pca_dim', 768),
+                   gate_hidden=config.get('join_mixture_gate_hidden', 64),
+                   gate_mode=config.get('join_mixture_gate_mode', 'learned'),
+                   fixed_alpha=config.get('join_mixture_fixed_alpha', 0.5))
+    for key in ('bitmap_dim', 'embedding_dim', 'pca_dim', 'gate_hidden'):
+        value = options[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < (0 if key == 'pca_dim' else 1):
+            raise ValueError(f'Invalid join mixture {key}: {value}')
+    if options['gate_mode'] not in ('learned', 'fixed'):
+        raise ValueError('join_mixture_gate_mode must be learned or fixed')
+    if not 0 <= options['fixed_alpha'] <= 1:
+        raise ValueError('join_mixture_fixed_alpha must be in [0, 1]')
+    return options
+
+
+def load_join_mixture_samples(config, split, query_count):
+    options = join_mixture_options(config)
+    if options is None:
+        raise ValueError('Join mixture is not enabled')
+    width = sum(options[k] for k in ('bitmap_dim', 'embedding_dim', 'pca_dim'))
+    result = np.empty((query_count, 2 * width), dtype=np.float32)
+    print(f'[Join Mixture][{split}] gate={options["gate_mode"]}; '
+          f'bitmap_dim={options["bitmap_dim"]}, embedding_dim={options["embedding_dim"]}, '
+          f'pca_dim={options["pca_dim"]}; bitmap is not projected; invalid PCA is masked.', flush=True)
+    for source_index, source in enumerate(('query_aware', 'random')):
+        key = f'{split}_join_{source}_embedding_file'
+        path = config.get(key)
+        if not path or not Path(path).is_file():
+            raise ValueError(f'Missing join mixture input: {key}')
+        print(f'[Join Mixture][{split}] {key}: {path}', flush=True)
+        values = torch.load(path, map_location='cpu', weights_only=True)
+        if not isinstance(values, (dict, list, tuple, torch.Tensor, np.ndarray)) or len(values) != query_count:
+            raise ValueError(f'{key}: expected exactly {query_count} query vectors')
+        for query_id in range(query_count):
+            value = _query_map(values, query_id) if isinstance(values, dict) else values[query_id]
+            vector = torch.as_tensor(value).detach().cpu().numpy()
+            if vector.shape != (width,) or not np.isfinite(vector).all():
+                raise ValueError(f'{key}, query {query_id}: expected finite [bitmap, mean, PCA] width {width}, without log_count')
+            result[query_id, source_index * width:(source_index + 1) * width] = vector
+    print(f'[Join Mixture][{split}] Loaded {query_count} queries, width={2 * width}.', flush=True)
+    return result
+
+
+class JoinSampleMixture(nn.Module):
+    """One query-only gate per query, shared source norms, unprojected bitmap."""
+
+    def __init__(self, table_dim, hidden_dim, bitmap_dim=100, embedding_dim=768,
+                 pca_dim=768, gate_hidden=64, gate_mode='learned', fixed_alpha=0.5):
+        super().__init__()
+        self.bitmap_dim, self.embedding_dim, self.pca_dim = bitmap_dim, embedding_dim, pca_dim
+        self.source_dim = bitmap_dim + embedding_dim + pca_dim
+        self.input_dim = 2 * self.source_dim
+        self.output_dim = self.source_dim
+        self.gate_mode, self.fixed_alpha = gate_mode, fixed_alpha
+        self.emb_norm = nn.LayerNorm(embedding_dim)
+        if pca_dim:
+            self.pca_norm = nn.LayerNorm(pca_dim)
+        if gate_mode == 'learned':
+            self.gate = nn.Sequential(nn.Linear(table_dim + 2 * hidden_dim, gate_hidden),
+                                      nn.ReLU(), nn.Linear(gate_hidden, 1))
+            nn.init.zeros_(self.gate[-1].weight)
+            nn.init.zeros_(self.gate[-1].bias)
+
+    def _encode(self, source):
+        b, e = self.bitmap_dim, self.embedding_dim
+        parts = [source[:, :b], self.emb_norm(source[:, b:b + e])]
+        if self.pca_dim:
+            raw_pca = source[:, b + e:]
+            # Preserve the existing join branch's threshold and post-LayerNorm mask.
+            valid = (raw_pca.abs().sum(dim=-1, keepdim=True) > 1e-6).to(source.dtype)
+            parts.append(self.pca_norm(raw_pca) * valid)
+        return torch.cat(parts, dim=-1)
+
+    def forward(self, features, table_vecs, predicate_context, join_context, sample_mask):
+        if features.ndim != 2 or features.shape[-1] != self.input_dim:
+            raise ValueError(f'Expected [batch, {self.input_dim}] join mixture features')
+        table_presence = (table_vecs * sample_mask).sum(dim=1).clamp(0, 1)
+        if self.gate_mode == 'learned':
+            context = torch.cat((table_presence, predicate_context, join_context), dim=-1)
+            alpha = torch.sigmoid(self.gate(context))
+        else:
+            alpha = features.new_full((features.shape[0], 1), self.fixed_alpha)
+        qa, random = features.split(self.source_dim, dim=-1)
+        mixed = alpha * self._encode(qa) + (1 - alpha) * self._encode(random)
+        self.last_alpha = alpha.detach()
+        # Coverage is diagnostic only: it never routes samples or changes alpha.
+        cq = qa[:, :self.bitmap_dim].ne(0).any(dim=-1).to(features.dtype)
+        cr = random[:, :self.bitmap_dim].ne(0).any(dim=-1).to(features.dtype)
+        both = cq * cr
+        self.last_stats = torch.stack((features.new_tensor(features.shape[0]), both.sum(),
+                                       (alpha[:, 0] * both).sum(), (cq * (1 - cr)).sum(),
+                                       (cr * (1 - cq)).sum(), ((1 - cq) * (1 - cr)).sum())).detach()
+        return mixed

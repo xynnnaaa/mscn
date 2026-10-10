@@ -199,7 +199,7 @@ from torch.utils.data import DataLoader
 # 根据你的目录结构导入
 from mscn.data import load_and_encode_all_data
 from mscn.model import SetConv
-from mscn.mixture import mixture_options
+from mscn.mixture import mixture_options, join_mixture_options
 
 def unnormalize_torch(vals, min_val, max_val):
     vals = (vals * (max_val - min_val)) + min_val
@@ -382,7 +382,8 @@ def load_model_and_infer(train_config, model_path):
     
     # 💡 修改：补齐实例化参数，传入 has_unmatched_embedding
     model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding, has_unmatched_embedding=has_unmatched_embedding,
-                    single_mixture_options=mixture_options(train_config))
+                    single_mixture_options=mixture_options(train_config),
+                    join_mixture_options=join_mixture_options(train_config))
     
     model_state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(model_state)

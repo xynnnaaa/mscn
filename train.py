@@ -11,7 +11,7 @@ import datetime
 from mscn.util import *
 from mscn.data import get_train_datasets, load_data, make_dataset, load_and_encode_all_data
 from mscn.model import SetConv
-from mscn.mixture import mixture_options
+from mscn.mixture import mixture_options, join_mixture_options
 
 import random
 def set_seed(seed):
@@ -115,6 +115,7 @@ def get_metrics(model, data_loader, cuda, min_val, max_val):
     total_loss = 0.0  # <--- 新增：用于累加 Loss
 
     mixture_stats = None
+    join_mixture_stats = None
     with torch.no_grad():
         for data_batch in data_loader:
             samples, predicates, joins, join_samples, targets, s_mask, p_mask, j_mask = data_batch
@@ -126,6 +127,9 @@ def get_metrics(model, data_loader, cuda, min_val, max_val):
             if getattr(model, "use_adaptive_single_mixture", False):
                 stats = model.single_mixture.last_stats
                 mixture_stats = stats.clone() if mixture_stats is None else mixture_stats + stats
+            if getattr(model, "use_adaptive_join_mixture", False):
+                stats = model.join_mixture.last_stats
+                join_mixture_stats = stats.clone() if join_mixture_stats is None else join_mixture_stats + stats
 
 
             loss = qerror_loss(outputs, targets.float(), min_val, max_val)
@@ -154,6 +158,12 @@ def get_metrics(model, data_loader, cuda, min_val, max_val):
         total, both, alpha_sum, only_q, only_r, neither = mixture_stats.cpu().tolist()
         mean_alpha = f"{alpha_sum / both:.4f}" if both else "n/a"
         print(f"Single mixture: tables={int(total)}, both={int(both)}, "
+              f"mean alpha (both)={mean_alpha}, only QA={int(only_q)}, "
+              f"only random={int(only_r)}, neither={int(neither)}")
+    if join_mixture_stats is not None:
+        total, both, alpha_sum, only_q, only_r, neither = join_mixture_stats.cpu().tolist()
+        mean_alpha = f"{alpha_sum / both:.4f}" if both else "n/a"
+        print(f"Join mixture: queries={int(total)}, both={int(both)}, "
               f"mean alpha (both)={mean_alpha}, only QA={int(only_q)}, "
               f"only random={int(only_r)}, neither={int(neither)}")
     return qerror, avg_loss
@@ -241,7 +251,8 @@ def train_and_predict(config):
     print(f"Has Unmatched Embedding: {has_unmatched_embedding == 1}")
 
     model = SetConv(table_vec_size, sample_vec_size, predicate_feats, join_feats, join_sample_feats, hid_units, use_single_embedding, has_unmatched_embedding=has_unmatched_embedding,
-                    single_mixture_options=mixture_options(config))
+                    single_mixture_options=mixture_options(config),
+                    join_mixture_options=join_mixture_options(config))
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # --- 新增：学习率调度器 ---

@@ -621,8 +621,11 @@ def load_and_encode_train_data(config):
 
 
 def load_and_encode_all_data(config):
-    from mscn.mixture import mixture_options, load_mixture_samples
+    from mscn.mixture import mixture_options, load_mixture_samples, join_mixture_options, load_join_mixture_samples
     adaptive = mixture_options(config) is not None
+    join_adaptive = join_mixture_options(config) is not None
+    if join_adaptive:
+        print("[Join Mixture] Enabled: QA/random join fusion; gate uses query structure only.", flush=True)
     if adaptive:
         print("[Single Mixture] Enabled: QA/random feature fusion; gate uses query structure only.", flush=True)
         print("[Single Mixture] Legacy sample loading is skipped; mixture inputs are loaded separately.", flush=True)
@@ -637,7 +640,7 @@ def load_and_encode_all_data(config):
     train_join_emb_path = config.get("train_join_embedding_file", "")
     test_join_emb_path = config.get("test_join_embedding_file", "")
 
-    if use_join_embedding in [1, 2, 3]:
+    if use_join_embedding in [1, 2, 3] and not join_adaptive:
         print(f"train_join_emb_path: {train_join_emb_path}")
         print(f"test_join_emb_path: {test_join_emb_path}")
 
@@ -685,7 +688,9 @@ def load_and_encode_all_data(config):
     label_norm, min_val, max_val = normalize_labels(t_label)
 
 
-    if use_join_embedding in [1, 2, 3]:
+    if join_adaptive:
+        train_js_enc = load_join_mixture_samples(config, "train", len(t_label))
+    elif use_join_embedding in [1, 2, 3]:
         train_js_all = torch.load(train_join_emb_path)
         if use_join_embedding == 1:
             # 模式1：只保留前 100 维 (Bitmap)
@@ -730,7 +735,9 @@ def load_and_encode_all_data(config):
     )
     test_label_norm, _, _ = normalize_labels(test_label_raw, min_val, max_val)
 
-    if use_join_embedding in [1, 2, 3]:
+    if join_adaptive:
+        test_js_enc = load_join_mixture_samples(config, "test", len(test_label_raw))
+    elif use_join_embedding in [1, 2, 3]:
         test_js_all = torch.load(test_join_emb_path)
         if use_join_embedding == 1:
             test_js_enc = np.array([test_js_all[i][:100].cpu().numpy() for i in range(len(test_label_raw))], dtype=np.float32)
